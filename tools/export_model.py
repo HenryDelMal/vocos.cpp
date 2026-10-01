@@ -1,4 +1,4 @@
-"""Export canonical NumPy tensors (also usable after converting MLX arrays)."""
+"""Export canonical Vocos 24 kHz EnCodec-decoder tensors."""
 import argparse
 import json
 import struct
@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 
 FIELDS = ("sample_rate", "channels", "hop_length", "n_fft", "latent_dim", "hidden_dim",
-          "intermediate_dim", "layers", "codebooks", "entries", "encoder_layers")
+          "intermediate_dim", "layers", "codebooks", "entries", "bandwidths")
 
 
 def export(path, metadata, weights):
@@ -15,8 +15,8 @@ def export(path, metadata, weights):
     if path.exists():
         raise FileExistsError(path)
     with path.open("xb") as stream:
-        stream.write(b"VOCOSN1\0")
-        stream.write(struct.pack("<12I", 1, *(int(metadata[k]) for k in FIELDS)))
+        stream.write(b"VOCOSN2\0")
+        stream.write(struct.pack("<12I", 2, *(int(metadata[k]) for k in FIELDS)))
         stream.write(struct.pack("<I", len(weights)))
         for name, value in sorted(weights.items()):
             value = np.asarray(value, dtype="<f4", order="C")

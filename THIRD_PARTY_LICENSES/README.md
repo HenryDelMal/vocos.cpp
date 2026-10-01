@@ -9,6 +9,16 @@ this project. Vocos is MIT licensed; its license text is preserved in
 
 Source: <https://github.com/gemelo-ai/vocos>
 
+The compatible pretrained decoder checkpoint is published by Charactr Inc. at
+[`charactr/vocos-encodec-24khz`](https://huggingface.co/charactr/vocos-encodec-24khz)
+under MIT. Downloaded checkpoint files are not included in this repository.
+
+The checkpoint also includes EnCodec RVQ codebook parameters used to map token
+indices into Vocos features. EnCodec is Copyright (c) Meta Platforms, Inc. and
+affiliates, and MIT licensed; its license text is preserved in
+[`ENCODEC-MIT.txt`](ENCODEC-MIT.txt). The original EnCodec project is at
+<https://github.com/facebookresearch/encodec>.
+
 ## encodec.cpp
 
 This project also takes design inspiration from Peter Featherstone's

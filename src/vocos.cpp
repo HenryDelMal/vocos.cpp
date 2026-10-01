@@ -39,17 +39,15 @@ struct codec::impl {
         std::ifstream in(path,std::ios::binary);
         require(bool(in), "Cannot open model");
         char magic[8]{}; in.read(magic,8);
-        require(std::string(magic,8)==std::string("VOCOSN1\0",8), "Invalid model magic");
-        require(read_u32(in)==1, "Unsupported model version");
+        require(std::string(magic,8)==std::string("VOCOSN2\0",8), "Invalid model magic");
+        require(read_u32(in)==2, "Unsupported model version");
         std::array<uint32_t,11> m{}; for(auto& v:m) v=read_u32(in);
         meta={m[0],m[1],m[2],m[3],m[4],m[5],m[6],m[7],m[8],m[9],m[10]};
-        require(meta.sample_rate>0 && meta.channels>=1 && meta.channels<=2, "Invalid audio metadata");
-        require(meta.n_fft>=4 && meta.n_fft<=8192 && meta.n_fft%2==0 && meta.hop_length>0 &&
-                meta.hop_length<meta.n_fft && (meta.n_fft-meta.hop_length)%2==0, "Invalid FFT/hop");
-        require(meta.latent_dim>0 && meta.latent_dim<=2048 && meta.hidden_dim>0 && meta.hidden_dim<=2048 &&
-                meta.intermediate_dim>0 && meta.intermediate_dim<=8192 && meta.layers<=64 &&
-                meta.codebooks>0 && meta.codebooks<=64 && meta.entries>0 && meta.entries<=65536 &&
-                meta.encoder_layers<=8, "Invalid model dimensions");
+        require(meta.sample_rate==24000 && meta.channels==1 && meta.hop_length==320 && meta.n_fft==1280,
+                "Model must be Vocos 24 kHz mono (FFT 1280, hop 320)");
+        require(meta.latent_dim==128 && meta.hidden_dim==384 && meta.intermediate_dim==1152 &&
+                meta.layers==8 && meta.codebooks==16 && meta.entries==1024 && meta.bandwidths==4,
+                "Model dimensions do not match pretrained Vocos EnCodec 24 kHz");
         auto count=read_u32(in); require(count<2048,"Too many tensors");
         size_t total=0;
         for(uint32_t i=0;i<count;++i) {
@@ -69,23 +67,25 @@ struct codec::impl {
         require(in.peek()==std::char_traits<char>::eof(),"Trailing model bytes");
         // Validate every tensor before any inference allocation.
         get("rvq",{meta.codebooks,meta.entries,meta.latent_dim});
-        Matrix dummy=Matrix::Zero(1,meta.latent_dim);
-        (void)backbone(dummy);
-        get("head.weight",{meta.channels*(meta.n_fft+2),meta.hidden_dim});
-        get("head.bias",{meta.channels*(meta.n_fft+2)});
-        uint32_t input=meta.channels, product=1;
-        for(uint32_t i=0;i<meta.encoder_layers;++i) {
-            auto p="encoder."+std::to_string(i);
-            auto& spec=get(p+".spec",{3});
-            require(spec.data[0]>=1 && spec.data[0]<=2048 && spec.data[1]>=1 && spec.data[1]<=128 &&
-                    spec.data[2]>=1 && spec.data[2]<=32,"Invalid encoder spec range");
-            uint32_t output=uint32_t(spec.data[0]), kernel=uint32_t(spec.data[1]), stride=uint32_t(spec.data[2]);
-            require(output>0 && output<=2048 && kernel>0 && kernel<=128 && stride>0 && stride<=32 &&
-                    spec.data[0]==float(output) && spec.data[1]==float(kernel) && spec.data[2]==float(stride),"Invalid encoder spec");
-            require(product<=meta.hop_length/stride,"Encoder stride overflow"); product*=stride;
-            get(p+".weight",{output,input,kernel}); get(p+".bias",{output}); input=output;
+        get("embed.weight",{meta.hidden_dim,meta.latent_dim,7});
+        get("embed.bias",{meta.hidden_dim});
+        get("norm.scale",{meta.bandwidths,meta.hidden_dim});
+        get("norm.shift",{meta.bandwidths,meta.hidden_dim});
+        get("final_norm.weight",{meta.hidden_dim}); get("final_norm.bias",{meta.hidden_dim});
+        get("head.weight",{meta.n_fft+2,meta.hidden_dim});
+        get("head.bias",{meta.n_fft+2});
+        for(uint32_t i=0;i<meta.layers;++i) {
+            auto p="blocks."+std::to_string(i);
+            get(p+".dwconv.weight",{meta.hidden_dim,1,7});
+            get(p+".dwconv.bias",{meta.hidden_dim});
+            get(p+".norm.scale",{meta.bandwidths,meta.hidden_dim});
+            get(p+".norm.shift",{meta.bandwidths,meta.hidden_dim});
+            get(p+".pwconv1.weight",{meta.intermediate_dim,meta.hidden_dim});
+            get(p+".pwconv1.bias",{meta.intermediate_dim});
+            get(p+".pwconv2.weight",{meta.hidden_dim,meta.intermediate_dim});
+            get(p+".pwconv2.bias",{meta.hidden_dim});
+            get(p+".gamma",{meta.hidden_dim});
         }
-        require(meta.encoder_layers==0 || (product==meta.hop_length && input==meta.latent_dim),"Encoder hop/latent mismatch");
     }
     Matrix linear(const Matrix& x,const std::string& p,uint32_t out) const {
         auto& w=get(p+".weight",{out,uint32_t(x.cols())}); auto& b=get(p+".bias",{out});
@@ -120,11 +120,22 @@ struct codec::impl {
         }
         return x;
     }
-    Matrix backbone(const Matrix& features) const {
-        Matrix x=norm(conv(features,"embed",meta.hidden_dim,7,1),"norm");
+    Matrix ada_norm(Matrix x,const std::string& p,uint32_t bandwidth) const {
+        auto& scale=get(p+".scale",{meta.bandwidths,meta.hidden_dim});
+        auto& shift=get(p+".shift",{meta.bandwidths,meta.hidden_dim});
+        for(Eigen::Index r=0;r<x.rows();++r) {
+            float mean=x.row(r).mean(), variance=(x.row(r).array()-mean).square().mean();
+            float inv=1/std::sqrt(variance+1e-6f);
+            for(uint32_t c=0;c<meta.hidden_dim;++c)
+                x(r,c)=(x(r,c)-mean)*inv*scale.data[bandwidth*meta.hidden_dim+c]+shift.data[bandwidth*meta.hidden_dim+c];
+        }
+        return x;
+    }
+    Matrix backbone(const Matrix& features,uint32_t bandwidth) const {
+        Matrix x=ada_norm(conv(features,"embed",meta.hidden_dim,7,1),"norm",bandwidth);
         for(uint32_t i=0;i<meta.layers;++i) {
             auto p="blocks."+std::to_string(i);
-            Matrix y=linear(norm(conv(x,p+".dwconv",meta.hidden_dim,7,1,true),p+".norm"),p+".pwconv1",meta.intermediate_dim);
+            Matrix y=linear(ada_norm(conv(x,p+".dwconv",meta.hidden_dim,7,1,true),p+".norm",bandwidth),p+".pwconv1",meta.intermediate_dim);
             y=y.unaryExpr([](float v){return gelu(v);});
             y=linear(y,p+".pwconv2",meta.hidden_dim);
             auto& gamma=get(p+".gamma",{meta.hidden_dim});
@@ -132,33 +143,30 @@ struct codec::impl {
         }
         return norm(x,"final_norm");
     }
-    std::vector<float> synthesize(const Matrix& features) const {
-        Matrix prediction=linear(backbone(features),"head",meta.channels*(meta.n_fft+2));
+    std::vector<float> synthesize(const Matrix& features,uint32_t bandwidth) const {
+        Matrix prediction=linear(backbone(features,bandwidth),"head",meta.n_fft+2);
         size_t frames=features.rows(), n=meta.n_fft, hop=meta.hop_length, bins=n/2+1;
         size_t length=(frames-1)*hop+n, pad=(n-hop)/2;
-        std::vector<float> result(frames*hop*meta.channels), window(n), envelope(length,0);
+        std::vector<float> result(frames*hop), window(n), envelope(length,0);
         for(size_t j=0;j<n;++j) window[j]=0.5f-0.5f*std::cos(2*std::numbers::pi_v<float>*float(j)/float(n));
         for(size_t t=0;t<frames;++t) for(size_t j=0;j<n;++j) envelope[t*hop+j]+=window[j]*window[j];
         Eigen::FFT<float> fft;
-        for(uint32_t channel=0;channel<meta.channels;++channel) {
-            std::vector<float> audio(length,0), frame;
-            std::vector<std::complex<float>> spectrum(n);
-            for(size_t t=0;t<frames;++t) {
-                size_t base=channel*2*bins;
-                for(size_t k=0;k<bins;++k) {
-                    float magnitude=std::exp(std::min(prediction(t,base+k),std::log(100.0f)));
-                    float phase=prediction(t,base+bins+k);
-                    spectrum[k]=std::polar(magnitude,phase);
-                }
-                spectrum[0]={spectrum[0].real(),0}; spectrum[n/2]={spectrum[n/2].real(),0};
-                for(size_t k=bins;k<n;++k) spectrum[k]=std::conj(spectrum[n-k]);
-                fft.inv(frame,spectrum);
-                for(size_t j=0;j<n;++j) audio[t*hop+j]+=frame[j]*window[j];
+        std::vector<float> audio(length,0), frame;
+        std::vector<std::complex<float>> spectrum(n);
+        for(size_t t=0;t<frames;++t) {
+            for(size_t k=0;k<bins;++k) {
+                float magnitude=std::exp(std::min(prediction(t,k),std::log(100.0f)));
+                float phase=prediction(t,bins+k);
+                spectrum[k]=std::polar(magnitude,phase);
             }
-            for(size_t j=0;j<frames*hop;++j) {
-                require(envelope[j+pad]>1e-11f,"Invalid overlap envelope");
-                result[j*meta.channels+channel]=audio[j+pad]/envelope[j+pad];
-            }
+            spectrum[0]={spectrum[0].real(),0}; spectrum[n/2]={spectrum[n/2].real(),0};
+            for(size_t k=bins;k<n;++k) spectrum[k]=std::conj(spectrum[n-k]);
+            fft.inv(frame,spectrum);
+            for(size_t j=0;j<n;++j) audio[t*hop+j]+=frame[j]*window[j];
+        }
+        for(size_t j=0;j<frames*hop;++j) {
+            require(envelope[j+pad]>1e-11f,"Invalid overlap envelope");
+            result[j]=audio[j+pad]/envelope[j+pad];
         }
         return result;
     }
@@ -168,14 +176,15 @@ codec::~codec()=default;
 codec::codec(codec&&) noexcept=default;
 codec& codec::operator=(codec&&) noexcept=default;
 model_info codec::info() const {return state->meta;}
-std::vector<float> codec::decode_features(std::span<const float> values,size_t frames) const {
+std::vector<float> codec::decode_features(std::span<const float> values,size_t frames,uint32_t bandwidth) const {
     auto dim=state->meta.latent_dim;
-    require(frames>0 && frames<=1000000 && values.size()/dim==frames && values.size()%dim==0,"Invalid features");
+    require(frames>0 && frames<=1000000 && values.size()/dim==frames && values.size()%dim==0 && bandwidth<4,"Invalid features/bandwidth");
     for(float v:values) require(std::isfinite(v),"Nonfinite feature");
-    return state->synthesize(Eigen::Map<const Matrix>(values.data(),frames,dim));
+    return state->synthesize(Eigen::Map<const Matrix>(values.data(),frames,dim),bandwidth);
 }
-std::vector<float> codec::decode(const tokens& codes) const {
-    auto m=info(); require(codes.frames>0 && codes.frames<=1000000 && codes.codebooks>0 && codes.codebooks<=m.codebooks &&
+std::vector<float> codec::decode(const tokens& codes,uint32_t bandwidth) const {
+    constexpr uint32_t q_for_bandwidth[]{2,4,8,16};
+    auto m=info(); require(bandwidth<4 && codes.codebooks==q_for_bandwidth[bandwidth] && codes.frames>0 && codes.frames<=1000000 &&
                           codes.indices.size()==codes.frames*codes.codebooks,"Invalid token dimensions");
     auto& table=state->get("rvq",{m.codebooks,m.entries,m.latent_dim});
     Matrix features=Matrix::Zero(codes.frames,m.latent_dim);
@@ -183,32 +192,6 @@ std::vector<float> codec::decode(const tokens& codes) const {
         auto index=codes.indices[t*codes.codebooks+q]; require(index<m.entries,"Invalid token index");
         for(uint32_t c=0;c<m.latent_dim;++c) features(t,c)+=table.data[(q*m.entries+index)*m.latent_dim+c];
     }
-    return state->synthesize(features);
-}
-tokens codec::encode(std::span<const float> pcm,uint32_t count) const {
-    auto m=info(); require(m.encoder_layers>0,"Decoder-only model");
-    require(!pcm.empty() && pcm.size()%m.channels==0 && pcm.size()/m.channels<=48000000 && count>0 && count<=m.codebooks,"Invalid audio/codebook count");
-    for(float v:pcm) require(std::isfinite(v),"Nonfinite PCM");
-    size_t samples=pcm.size()/m.channels, padded=((samples+m.hop_length-1)/m.hop_length)*m.hop_length;
-    Matrix x=Matrix::Zero(padded,m.channels);
-    std::copy(pcm.begin(),pcm.end(),x.data());
-    for(uint32_t i=0;i<m.encoder_layers;++i) {
-        auto p="encoder."+std::to_string(i); auto& spec=state->get(p+".spec",{3});
-        x=state->conv(x,p,uint32_t(spec.data[0]),uint32_t(spec.data[1]),uint32_t(spec.data[2]));
-        if(i+1<m.encoder_layers) x=x.unaryExpr([](float v){return gelu(v);});
-    }
-    tokens codes{size_t(x.rows()),count,{}}; codes.indices.resize(codes.frames*count);
-    auto& table=state->get("rvq",{m.codebooks,m.entries,m.latent_dim});
-    for(size_t t=0;t<codes.frames;++t) for(uint32_t q=0;q<count;++q) {
-        float best=std::numeric_limits<float>::infinity(); uint32_t winner=0;
-        for(uint32_t k=0;k<m.entries;++k) {
-            float distance=0;
-            for(uint32_t c=0;c<m.latent_dim;++c) {float d=x(t,c)-table.data[(q*m.entries+k)*m.latent_dim+c]; distance+=d*d;}
-            if(distance<best) {best=distance; winner=k;}
-        }
-        codes.indices[t*count+q]=uint16_t(winner);
-        for(uint32_t c=0;c<m.latent_dim;++c) x(t,c)-=table.data[(q*m.entries+winner)*m.latent_dim+c];
-    }
-    return codes;
+    return state->synthesize(features,bandwidth);
 }
 }

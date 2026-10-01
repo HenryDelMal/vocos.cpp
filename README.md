@@ -1,70 +1,89 @@
-# Native Vocos-style stereo codec
+# Vocos.cpp — 24 kHz mono pretrained decoder
 
 > **Warning:** This project was built using AI assistance.
 
-Initial C++20/Eigen float32 inference implementation for a jointly trained codec.
-No Python, MLX, Torch, or GPU runtime is required by the C++ library. Eigen's
-unsupported FFT module supplies the portable inverse transform. This project is
-separate from the existing EnCodec repositories and does not modify ECNG.
+This repository reimplements the **pretrained Vocos EnCodec 24 kHz decoder** in
+C++20. It loads the released `charactr/vocos-encodec-24khz` checkpoint, converts
+EnCodec RVQ indices into the feature vectors Vocos expects, then runs Vocos's
+ConvNeXt backbone and inverse STFT head. It is a decoder implementation; it
+does not contain a waveform encoder or retrain Vocos. Create codes with a
+compatible EnCodec 24 kHz encoder, or supply 128-dimensional Vocos features.
 
-Implemented: SAME-padded convolutional encoder with GELU, greedy RVQ, codebook
-lookup/sum, unconditioned Vocos ConvNeXt backbone, exact-erf GELU, channel LayerNorm
-(epsilon 1e-6), learned layer scales, joint stereo magnitude/phase projection,
-periodic Hann inverse-STFT with envelope normalization and SAME trimming.
+Supported checkpoint geometry is mono 24 kHz, 75 frames/second, 1280-point FFT,
+320-sample hop, 128 input features, eight 384-wide ConvNeXt blocks, and 1152-wide
+intermediate layers. It supports the pretrained bandwidth IDs 0–3 (1.5, 3, 6,
+and 12 kbps), corresponding to 2, 4, 8, and 16 EnCodec codebooks. This matches
+the released Vocos config's adaptive normalization and learned codebook table.
+Other Vocos configurations are rejected.
 
-The encoder is a new compact strided-convolution architecture, not Meta SEANet
-and not a pretrained Vocos encoder (Vocos has no waveform encoder). There are no
-trained stereo weights yet. This is offline segment inference, not a streaming
-player; chunk context, container, quantization, and Android performance remain
-future work. Released Vocos checkpoints use different tensor names and can use
-adaptive bandwidth normalization, which this first graph does not implement.
-They cannot be loaded directly. No pretrained-quality claims are implied.
+This is offline segment inference. Streaming, entropy coding, packet/container
+format, automatic gain metadata, and Android integration are outside the current
+implementation. Vocos quality depends on using the matching EnCodec code indices
+and checkpoint; this repository does not include pretrained model weights.
 
-## Build and numerical verification
+## Build
 
-From the workspace root, reuse the already downloaded Eigen headers:
+Requirements: CMake 3.23+, a C++20 compiler, and Eigen 3 headers.
 
 ```sh
-cmake -S vocos.cpp -B vocos.cpp/build -DCMAKE_BUILD_TYPE=Release \
-  -DVOCOS_EIGEN_DIR="$PWD/encodec.cpp/.cache/cpm/eigen3/04d2"
-cmake --build vocos.cpp/build --parallel 2
-.venv-mlx-training/bin/python vocos.cpp/tools/check_parity.py vocos.cpp/build/vocos_fixture
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DVOCOS_EIGEN_DIR=/path/to/eigen
+cmake --build build --parallel
 ```
 
-The test exports deterministic synthetic weights and compares the complete native
-encoder/RVQ/stereo decoder with an independent NumPy implementation at 48 kHz,
-hop 320 and FFT 1280. Random weights test numerical behavior, not audio quality.
+## Convert the pretrained checkpoint
 
-## Runtime model version 1
+Download `config.yaml` and `pytorch_model.bin` from
+[`charactr/vocos-encodec-24khz`](https://huggingface.co/charactr/vocos-encodec-24khz),
+then run with Python, PyTorch, Vocos, NumPy, and PyYAML installed:
 
-Little-endian magic `VOCOSN1\0`, uint32 version, followed by eleven uint32 metadata
-fields in the order in `tools/export_model.py`, uint32 tensor count, then named
-tensors. Each tensor has uint32 UTF-8 name length, name bytes, uint32 rank, uint32
-dimensions, then contiguous little-endian float32 data. No training state is stored.
-The loader bounds dimensions and rejects malformed/nonfinite tensor data.
+```sh
+python tools/export_vocos.py config.yaml pytorch_model.bin vocos24.vocos
+```
 
-Canonical convolution weights are `[output, input-per-group, kernel]`; linear
-weights are `[output, input]`; RVQ is `[codebook, entry, latent]`. Activations are
-frame-major. MLX convolution weights must be transposed from `[output, kernel,
-input-per-group]` during export. Each `encoder.N.spec` stores three integer-valued
-float32 values: output channels, kernel, stride. Encoder stride product equals
-hop length. The last encoder layer has no activation. Decoder-only exports set
-encoder_layers to zero and omit encoder tensors; RVQ remains present.
+The exporter validates the Vocos architecture and codebook table before writing
+a portable little-endian inference file. It includes the decoder, adaptive
+normalization tables, and the Vocos EnCodec codebook embeddings.
 
-Encoder input is interleaved PCM, padded right to a hop multiple. Tokens are
-frame-major uint16 indices. Decoded PCM is interleaved and unclipped, with length
-`token_frames * hop` per channel; callers retain original length and trim padding.
-The network currently has no automatic loudness normalization or frame scales.
+## C++ API
 
-`tools/export_model.py metadata.json canonical-weights.npz output.bin` exports
-weights without overwriting existing files. A direct MLX checkpoint adapter awaits
-the matching training model implementation.
+`vocos::codec::decode` accepts frame-major EnCodec token indices and a Vocos
+`bandwidth_id` (0–3). `decode_features` accepts frame-major 128D feature vectors
+at the same explicit bandwidth ID. Both return unclipped mono float PCM at
+24 kHz. The API expects already encoded tokens: this library does not analyze
+waveform audio or create RVQ codes.
 
-Architecture references: [Vocos](https://github.com/gemelo-ai/vocos) (MIT),
-particularly `models.py`, `modules.py`, `heads.py`, and `spectral_ops.py`. The
-native implementation was written for this project. The public C++ API and
-build organization were also informed by
-[`pfeatherstone/encodec.cpp`](https://github.com/pfeatherstone/encodec.cpp),
-whose repository is MIT licensed. See [LICENSE](LICENSE) for this repository's
-MIT license and [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES/README.md) for
-third-party attributions and dependency licensing.
+`tools/vocos_fixture` is a small raw-binary harness for these two decoder paths.
+Input tokens are uint16 frame-major indices; feature input and decoded output
+are float32. This harness is for integration and parity checks, not a packaged
+audio file interface.
+
+## Verify against Vocos
+
+With the converted checkpoint and Python Vocos environment available:
+
+```sh
+python tools/check_pretrained.py build/vocos_fixture config.yaml pytorch_model.bin
+```
+
+The parity script compares C++ output with the official PyTorch Vocos backbone
+and ISTFT head for both code and feature inputs at all four pretrained bandwidth
+IDs. It includes one-frame and longer segments plus left/right context chunk
+checks matching the decoding approach used by the Radios Emergencia Chile app.
+It tests actual pretrained parameters, not synthetic random weights.
+
+## Format
+
+The `.vocos` file uses `VOCOSN2` magic and a versioned, little-endian tensor container. Version 2 stores
+the fixed Vocos 24 kHz mono geometry, 16 codebooks of 1024 128D embeddings, all
+eight adaptive-normalized ConvNeXt blocks, and the inverse-STFT projection.
+`tools/export_model.py` contains the canonical tensor writer; the public
+`tools/export_vocos.py` converts the official Vocos PyTorch checkpoint.
+
+## Attribution and licensing
+
+The neural decoder follows Vocos's ConvNeXt backbone, bandwidth-conditioned
+normalization, Fourier head, and same-padded inverse STFT. See
+[`THIRD_PARTY_LICENSES`](THIRD_PARTY_LICENSES/README.md) for Vocos attribution,
+the EnCodec C++ design reference, and Eigen's external dependency license.
+This repository is MIT licensed; see [`LICENSE`](LICENSE).
