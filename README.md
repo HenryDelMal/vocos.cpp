@@ -58,6 +58,8 @@ The network currently has no automatic loudness normalization or frame scales.
 weights without overwriting existing files. A direct MLX checkpoint adapter awaits
 the matching training model implementation.
 
-Architecture references: https://github.com/gemelo-ai/vocos (MIT), particularly
-models.py, modules.py, heads.py and spectral_ops.py. Native implementation written
-for this workspace. Eigen is MPL-2.0; review its bundled licensing when distributing.
+Architecture references: [Vocos](https://github.com/gemelo-ai/vocos) (MIT),
+particularly `models.py`, `modules.py`, `heads.py`, and `spectral_ops.py`. The
+native implementation was written for this project. See [LICENSE](LICENSE) for
+this repository's MIT license and [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES/README.md)
+for third-party attributions and dependency licensing.
