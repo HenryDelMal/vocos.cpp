@@ -1,4 +1,4 @@
-# Vocos.cpp — 24 kHz mono pretrained decoder
+# Vocos.cpp — Experimental Vocos C++ implementation
 
 > **Warning:** This project was built using AI assistance.
 
