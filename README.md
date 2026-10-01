@@ -60,6 +60,9 @@ the matching training model implementation.
 
 Architecture references: [Vocos](https://github.com/gemelo-ai/vocos) (MIT),
 particularly `models.py`, `modules.py`, `heads.py`, and `spectral_ops.py`. The
-native implementation was written for this project. See [LICENSE](LICENSE) for
-this repository's MIT license and [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES/README.md)
-for third-party attributions and dependency licensing.
+native implementation was written for this project. The public C++ API and
+build organization were also informed by
+[`pfeatherstone/encodec.cpp`](https://github.com/pfeatherstone/encodec.cpp),
+whose repository is MIT licensed. See [LICENSE](LICENSE) for this repository's
+MIT license and [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES/README.md) for
+third-party attributions and dependency licensing.

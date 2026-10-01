@@ -9,6 +9,15 @@ this project. Vocos is MIT licensed; its license text is preserved in
 
 Source: <https://github.com/gemelo-ai/vocos>
 
+## encodec.cpp
+
+This project also takes design inspiration from Peter Featherstone's
+[`encodec.cpp`](https://github.com/pfeatherstone/encodec.cpp), especially its
+compact C++ codec API, separation of model weights, and CMake integration. No
+source files, model weights, or other assets from that project are included
+here. Its repository identifies its license as MIT; see the upstream
+[`LICENSE`](https://github.com/pfeatherstone/encodec.cpp/blob/main/LICENSE).
+
 ## Eigen
 
 Eigen is an external header-only build dependency. This repository does not
