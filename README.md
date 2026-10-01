@@ -1,5 +1,7 @@
 # Native Vocos-style stereo codec
 
+> **Warning:** This project was built using AI assistance.
+
 Initial C++20/Eigen float32 inference implementation for a jointly trained codec.
 No Python, MLX, Torch, or GPU runtime is required by the C++ library. Eigen's
 unsupported FFT module supplies the portable inverse transform. This project is
@@ -66,7 +68,3 @@ build organization were also informed by
 whose repository is MIT licensed. See [LICENSE](LICENSE) for this repository's
 MIT license and [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES/README.md) for
 third-party attributions and dependency licensing.
-
-## Development disclosure
-
-This project was built using AI assistance.
