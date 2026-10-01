@@ -66,3 +66,7 @@ build organization were also informed by
 whose repository is MIT licensed. See [LICENSE](LICENSE) for this repository's
 MIT license and [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES/README.md) for
 third-party attributions and dependency licensing.
+
+## Development disclosure
+
+This project was built using AI assistance.
