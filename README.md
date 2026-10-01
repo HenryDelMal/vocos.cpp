@@ -1,6 +1,6 @@
 # Vocos.cpp — Experimental Vocos C++ implementation
 
-> **Warning:** This project was built using AI assistance.
+> **Warning:** This project was built using AI assistance. This README.md too (okay, this text was human-written), so it may be very imprecise between different iterations. Sometimes LLMs understand weird things.
 
 This repository reimplements the **pretrained Vocos EnCodec 24 kHz decoder** in
 C++20. It loads the released `charactr/vocos-encodec-24khz` checkpoint, converts
